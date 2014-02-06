@@ -170,27 +170,30 @@ function openIdLogin (emailAddress, password) {
  *
  * @return {Promise} Promise for the `fkey`.
  */
-function connectChat () {
+CabbageBot.prototype.connect = function CabbageBot_connect () {
 	return req('http://chat.stackoverflow.com/').then(function (body) {
-		return body.match(/name="fkey"[^>]+value="([a-z0-9]{32})"/)[1];
-	});
+		return this.fkey = body.match(/name="fkey"[^>]+value="([a-z0-9]{32})"/)[1];
+	}.bind(this));
 }
 
 /**
  * Join a chat room.
  *
  * @param {Number} roomId Room identifier.
- * @param {String} fkey The chat `fkey`.
  * @return {Promise} Promise for the websocket address.
  */
-function joinRoom (roomId, fkey) {
+CabbageBot.prototype.join = function CabbageBot_join (roomId) {
+	if (!this.fkey) {
+		return Promise.reject(new Error('Not connected (fkey not available).'));
+	}
+
 	// chat auth request
 	return req({
 		method: 'POST',
 		uri: 'http://chat.stackoverflow.com/ws-auth',
 		form: {
 			roomid: roomId,
-			fkey: fkey
+			fkey: this.fkey
 		}
 	}).then(function (body) {
 		return JSON.parse(body).url;
@@ -200,17 +203,20 @@ function joinRoom (roomId, fkey) {
 /**
  * Leave all chat rooms.
  *
- * @param {String} fkey The chat `fkey`.
  * @return {Promise} Promise to leave.
  */
-function leaveAll (fkey) {
+CabbageBot.prototype.leaveAll = function CabbageBot_leaveAll () {
+	if (!this.fkey) {
+		return Promise.reject(new Error('Not connected (fkey not available).'));
+	}
+
 	// leave request
 	return req({
 		method: 'POST',
 		uri: 'http://chat.stackoverflow.com/chats/leave/all',
 		form: {
 			quiet: true,
-			fkey: fkey
+			fkey: this.fkey
 		}
 	});
 }
@@ -235,20 +241,18 @@ function handleMessageEvent (e, cbg) {
 	}
 }
 
-openIdLogin(config.emailAddress, config.password).then(connectChat).then(function (fkey) {
+var cbg = new CabbageBot();
+openIdLogin(config.emailAddress, config.password).then(cbg.connect.bind(cbg)).then(function (fkey) {
 	// register SIGINT handler
 	process.on('SIGINT', function() {
 		console.log('Shutting down.');
-		leaveAll(fkey).then(function () {
+		cbg.leaveAll().then(function () {
 			process.exit();
 		});
 	});
 
 	// join chat room
-	var cbg = new CabbageBot();
-	cbg.fkey = fkey;
-
-	return joinRoom(config.roomId, fkey).then(function (wsAddress) {
+	return cbg.join(config.roomId).then(function (wsAddress) {
 		var ws = new WebSocket(wsAddress + '?l=0', { origin: 'http://chat.stackoverflow.com' });
 		ws.on('error', function (err) {
 			console.log(err);
