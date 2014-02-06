@@ -4,7 +4,8 @@
 	"author": "Patrick Westerhoff <PatrickWesterhoff@gmail.com>",
 	"dependencies": {
 		"ws": "*",
-		"request": "*"
+		"request": "*",
+		"es6-promise": "*"
 	},
 	"scripts": {
 		"start": "node ./app.js"

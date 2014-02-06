@@ -1,5 +1,38 @@
-var request = require('request').defaults({ jar: true });
+var Promise = require('es6-promise').Promise;
 var WebSocket = require('ws');
+var request = require('request').defaults({ jar: true });
+
+/**
+ * Make a HTTP request.
+ *
+ * @param {String|Object} uriOrOptions The URI, or a request options object.
+ * @param {String} [method=GET] The HTTP request method if not specified in
+ *     the request object.
+ * @return {Promise} Promise for the response body.
+ */
+function req (uriOrOptions, method) {
+	if (typeof uriOrOptions === 'string') {
+		uriOrOptions = { uri: uriOrOptions };
+	}
+
+	if (!uriOrOptions.method) {
+		uriOrOptions.method = (method || 'GET').toUpperCase();
+	}
+
+	return new Promise (function (resolve, reject) {
+		request(uriOrOptions, function (err, resp, body) {
+			if (err) {
+				reject(err);
+			}
+			else if (resp.statusCode != 200 && resp.statusCode != 201) {
+				reject(new Error('HTTP ' + resp.statusCode));
+			}
+			else {
+				resolve(body);
+			}
+		});
+	});
+}
 
 try {
 	var config = require('./config');
@@ -14,15 +47,13 @@ catch (e) {
  *
  * @param {String} emailAddress The email address to log in with.
  * @param {String} password The password to log in with.
- * @param {Function} callback Called on login.
+ * @return {Promise} Promise to log in.
  */
-function openIdLogin (emailAddress, password, callback) {
-	request.get('https://stackoverflow.com/users/login', function (err, resp, body) {
-		if (err) {
-			return callback(err);
-		}
-
-		var authRequest = {
+function openIdLogin (emailAddress, password) {
+	return req('https://stackoverflow.com/users/login').then(function (body) {
+		// auth request
+		return req({
+			method: 'POST',
 			uri: 'https://stackoverflow.com/users/authenticate',
 			followAllRedirects: true,
 			form: {
@@ -32,42 +63,33 @@ function openIdLogin (emailAddress, password, callback) {
 				oauth_server: '',
 				fkey: body.match(/"fkey":"([a-f0-9]{32})"/)[1]
 			}
-		};
-		request.post(authRequest, function (err, resp, body) {
-			if (err) {
-				return callback(err);
-			}
-
-			var loginRequest = {
-				uri: 'https://openid.stackexchange.com/account/login/submit',
-				followAllRedirects: true,
-				form: {
-					email: emailAddress,
-					password: password,
-					fkey: body.match(/name="fkey" value="([^"]+)"/)[1],
-					session: body.match(/name="session" value="([^"]+)"/)[1]
-				}
-			};
-			request.post(loginRequest, function (err, resp, body) {
-				callback(err);
-			});
 		});
+	}).then(function (body) {
+		// login request
+		return req({
+			method: 'POST',
+			uri: 'https://openid.stackexchange.com/account/login/submit',
+			followAllRedirects: true,
+			form: {
+				email: emailAddress,
+				password: password,
+				fkey: body.match(/name="fkey" value="([^"]+)"/)[1],
+				session: body.match(/name="session" value="([^"]+)"/)[1]
+			}
+		});
+	}).then(function (body) {
+		return null;
 	});
 }
 
 /**
  * Connect to chat, receiving the chat `fkey`.
  *
- * @param {Function} callback Called with the `fkey` as second parameter.
+ * @return {Promise} Promise for the `fkey`.
  */
-function connectChat (callback) {
-	request.get('http://chat.stackoverflow.com/', function (err, resp, body) {
-		if (err) {
-			return callback(err);
-		}
-
-		var fkey = body.match(/name="fkey"[^>]+value="([a-z0-9]{32})"/)[1];
-		callback(null, fkey);
+function connectChat () {
+	return req('http://chat.stackoverflow.com/').then(function (body) {
+		return body.match(/name="fkey"[^>]+value="([a-z0-9]{32})"/)[1];
 	});
 }
 
@@ -76,24 +98,19 @@ function connectChat (callback) {
  *
  * @param {Number} roomId Room identifier.
  * @param {String} fkey The chat `fkey`.
- * @param {Function} callback Called when the room was joined; the second
- *             parameter is the websocket address.
+ * @return {Promise} Promise for the websocket address.
  */
-function joinRoom (roomId, fkey, callback) {
-	var chatAuthRequest = {
+function joinRoom (roomId, fkey) {
+	// chat auth request
+	return req({
+		method: 'POST',
 		uri: 'http://chat.stackoverflow.com/ws-auth',
 		form: {
 			roomid: roomId,
 			fkey: fkey
 		}
-	};
-	request.post(chatAuthRequest, function (err, resp, body) {
-		if (err) {
-			callback(err);
-		}
-		else {
-			callback(null, JSON.parse(body).url);
-		}
+	}).then(function (body) {
+		return JSON.parse(body).url;
 	});
 }
 
@@ -101,18 +118,17 @@ function joinRoom (roomId, fkey, callback) {
  * Leave all chat rooms.
  *
  * @param {String} fkey The chat `fkey`.
- * @param {Function} callback Called when done.
+ * @return {Promise} Promise to leave.
  */
-function leaveAll (fkey, callback) {
-	var leaveRequest = {
+function leaveAll (fkey) {
+	// leave request
+	return req({
+		method: 'POST',
 		uri: 'http://chat.stackoverflow.com/chats/leave/all',
 		form: {
 			quiet: true,
 			fkey: fkey
 		}
-	}
-	request.post(leaveRequest, function (err, resp, body) {
-		callback();
 	});
 }
 
@@ -191,47 +207,39 @@ function handleMessageEvent (e, fkey) {
 	}
 }
 
-
-// Start
-openIdLogin(config.emailAddress, config.password, function (err) {
-	if (err) {
-		return console.log(err);
-	}
-
-	console.log('Logged in; starting chat.');
-	connectChat(function (err, fkey) {
-		// register SIGINT handler
-		process.on('SIGINT', function() {
-			console.log('Shutting down.');
-			leaveAll(fkey, function () {
-				process.exit();
-			});
-		});
-
-		// join room
-		joinRoom(config.roomId, fkey, function (err, wsAddress) {
-			var ws = new WebSocket(wsAddress + '?l=0', { origin: 'http://chat.stackoverflow.com' });
-			ws.on('error', function (err) {
-				console.log(err);
-			});
-			ws.on('open', function () {
-				console.log('Websocket opened.');
-			});
-			ws.on('message', function (message, flags) {
-				var data = JSON.parse(message);
-				var room = data.r6;
-
-				if (room.e && room.t != room.d) {
-					room.e.forEach (function (e) {
-						if (e.event_type == 1) {
-							handleMessageEvent(e, fkey);
-						}
-						else {
-							console.log(e);
-						}
-					});
-				}
-			});
+openIdLogin(config.emailAddress, config.password).then(connectChat).then(function (fkey) {
+	// register SIGINT handler
+	process.on('SIGINT', function() {
+		console.log('Shutting down.');
+		leaveAll(fkey).then(function () {
+			process.exit();
 		});
 	});
-});
+
+
+	return joinRoom(config.roomId, fkey).then(function (wsAddress) {
+		var ws = new WebSocket(wsAddress + '?l=0', { origin: 'http://chat.stackoverflow.com' });
+		ws.on('error', function (err) {
+			console.log(err);
+		});
+		ws.on('open', function () {
+			console.log('Websocket opened.');
+		});
+		ws.on('message', function (message, flags) {
+			var data = JSON.parse(message);
+			var room = data.r6;
+
+			if (room.e && room.t != room.d) {
+				room.e.forEach (function (e) {
+					if (e.event_type == 1) {
+						handleMessageEvent(e, fkey);
+					}
+					else {
+						console.log(e);
+					}
+				});
+			}
+		});
+	});
+})
+.catch(console.error);
