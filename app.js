@@ -34,6 +34,19 @@ function req (uriOrOptions, method) {
 	});
 }
 
+/**
+ * Delay a promise.
+ *
+ * @param {Number} duration Delay duration in milliseconds.
+ * @return {Promise} Promise that fulfills after the delay.
+ */
+function delay (duration) {
+	return new Promise(function (resolve, reject) {
+		setTimeout(resolve, duration);
+	});
+}
+
+
 try {
 	var config = require('./config');
 }
