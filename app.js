@@ -47,6 +47,76 @@ function delay (duration) {
 }
 
 
+/**
+ * Create a cabbage bot.
+ *
+ * @constructor
+ */
+function CabbageBot () {
+	this.fkey = null;
+	this.currentRoom = null;
+}
+
+/**
+ * Send a new chat message to the specified room.
+ *
+ * @param {String} text The message text.
+ * @param {Number} [roomId] The room id, or the default room if missing.
+ * @return {Promise} Promise for the message id.
+ */
+CabbageBot.prototype.send = function cabbageBot_send (text, roomId) {
+	roomId = roomId || this.currentRoom;
+	if (!roomId) {
+		return Promise.reject(new Error('No room id specified.'));
+	}
+
+	var path = '/chats/' + roomId + '/messages/new';
+	return this.apiRequest(path, { text: text }).then(function (data) {
+		return data.id;
+	});
+}
+
+/**
+ * Edit an existing chat message.
+ *
+ * @param {String} newText The new message text.
+ * @param {Number} messageId The message id.
+ * @return {Promise} Promise for the message id.
+ */
+CabbageBot.prototype.edit = function CabbageBot_edit (newText, messageId) {
+	var path = '/messages/' + messageId;
+	return this.apiRequest(path, { text: newText }).then(function (data) {
+		return messageId;
+	});
+}
+
+/**
+ * Send a chat API request.
+ *
+ * @param {String} path The API request path, with a leading `/`.
+ * @param {Object} data The request data.
+ * @return {Promise} Promise for the parsed response object.
+ */
+CabbageBot.prototype.apiRequest = function CabbageBot_apiRequest (path, data) {
+	var requestOptions = {
+		method: 'POST',
+		uri: 'http://chat.stackoverflow.com' + path,
+		form: data
+	};
+
+	if (!requestOptions.form.fkey) {
+		requestOptions.form.fkey = this.fkey;
+	}
+	if (!requestOptions.form.fkey) {
+		return Promise.reject(new Error('No fkey specified.'));
+	}
+
+	return req(requestOptions).then(function (response) {
+		return (response && response.length > 0) ? JSON.parse(response) : {};
+	});
+};
+
+
 try {
 	var config = require('./config');
 }
@@ -145,78 +215,23 @@ function leaveAll (fkey) {
 	});
 }
 
-/**
- * Handle a chat API response.
- *
- * @param {Function} callback Called with the response data.
- * @return {Funciton} Response handler.
- */
-function handleApiResponse (callback) {
-	return function (err, resp, body) {
-		if (callback) {
-			if (err) {
-				callback(err);
-			}
-			else if (resp.responseCode != 200) {
-				callback(body);
-			}
-			else {
-				callback(null, JSON.parse(body));
-			}
-		}
-	};
-}
-
-
-/**
- * Send chat message.
- *
- * @param {String} text The message text to send.
- * @param {Number} roomId The room identifier.
- * @param {String} fkey The chat `fkey`.
- * @param {Function} callback Called with the response data.
- */
-function sendMessage (text, roomId, fkey, callback) {
-	var apiRequest = {
-		uri: 'http://chat.stackoverflow.com/chats/' + roomId + '/messages/new',
-		form: {
-			text: text,
-			fkey: fkey
-		}
-	};
-	request.post(apiRequest, handleApiResponse(callback));
-}
-
-/**
- * Edit an existing chat message.
- *
- * @param {String} text The new message text.
- * @param {Number} messageId The message identifier.
- * @param {String} fkey The chat `fkey`.
- * @param {Function} callback Called with the response data.
- */
-function editMessage (text, messageId, fkey, callback) {
-	var apiRequest = {
-		uri: 'http://chat.stackoverflow.com/messages/' + messageId,
-		form: {
-			text: text,
-			fkey: fkey
-		}
-	};
-	request.post(apiRequest, handleApiResponse(callback));
-}
-
 
 // Example handler
-function handleMessageEvent (e, fkey) {
+function handleMessageEvent (e, cbg) {
 	if (e.event_type != 1) {
 		return;
 	}
 
 	if (e.content.indexOf('!!rabbit') > -1) {
-		sendMessage('I like rabbits!', e.room_id, fkey, function (err, data) {
-			console.log(data.id);
-		});
+		cbg.send('I like rabbits!', e.room_id).then(function (msgId) {
+			console.log('Message sent: ' + msgId);
+
+			return delay(5000).then(function () {
+				return cbg.edit('I *really* like rabbits!', msgId).then(function (msgId) {
+					console.log('Message edited: ' + msgId);
+				});
+			});
+		}).catch(console.error);
 	}
 }
 
@@ -229,6 +244,9 @@ openIdLogin(config.emailAddress, config.password).then(connectChat).then(functio
 		});
 	});
 
+	// join chat room
+	var cbg = new CabbageBot();
+	cbg.fkey = fkey;
 
 	return joinRoom(config.roomId, fkey).then(function (wsAddress) {
 		var ws = new WebSocket(wsAddress + '?l=0', { origin: 'http://chat.stackoverflow.com' });
@@ -245,7 +263,7 @@ openIdLogin(config.emailAddress, config.password).then(connectChat).then(functio
 			if (room.e && room.t != room.d) {
 				room.e.forEach (function (e) {
 					if (e.event_type == 1) {
-						handleMessageEvent(e, fkey);
+						handleMessageEvent(e, cbg);
 					}
 					else {
 						console.log(e);
